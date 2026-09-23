@@ -24,43 +24,40 @@ import fr.samflix.vaniametrics.api.Config;
 import fr.samflix.vaniametrics.api.Counter;
 import fr.samflix.vaniametrics.api.Gauge;
 import fr.samflix.vaniametrics.api.MetricRegistry;
-import fr.samflix.vaniametrics.api.Joueur;
+import fr.samflix.vaniametrics.api.PlayerRef;
 import fr.samflix.vaniametrics.api.PlayerSeries;
 
 /**
- * Les quêtes — SANS TOUCHER À LA BASE DE DONNÉES.
+ * Quest progress, without touching the database.
  *
- * <p>C'ÉTAIT LE POINT À TRANCHER. L'état de BetonQuest vit dans MySQL, et la voie évidente était
- * d'y faire un {@code SELECT tag, COUNT(*)}. Elle aurait couplé l'exportateur au schéma d'un
- * plugin qu'on ne maîtrise pas, imposé une connexion JDBC, et fait dépendre le TPS de la santé
- * d'une base. Vérifié dans le jar : BetonQuest émet de VRAIS événements Bukkit —
- * {@link PlayerTagAddEvent}, {@link PlayerUpdatePointEvent}, {@link PlayerJournalAddEvent} — qui
- * portent le tag, la catégorie, le compte et le profil. Il n'y a donc rien à interroger : il suffit
- * d'écouter.
+ * <p>BetonQuest keeps its state in MySQL, but a {@code SELECT tag, COUNT(*)} would couple this
+ * exporter to a schema it doesn't own, require a JDBC connection, and make TPS depend on a
+ * database's health. BetonQuest also emits real Bukkit events — {@link PlayerTagAddEvent},
+ * {@link PlayerUpdatePointEvent}, {@link PlayerJournalAddEvent} — carrying the tag, category,
+ * count and profile, so there is nothing to query: listening is enough.
  *
- * <p>CE QU'ON PERD, ET IL FAUT LE SAVOIR : un compteur repart de zéro au redémarrage du serveur.
- * « Combien ont trouvé ce crâne depuis toujours » n'est plus une question que ce collecteur sait
- * poser — {@code increase()} sur une fenêtre, oui ; le cumul de l'histoire, non. Le détail par
- * joueur comble une partie du trou : tant qu'un joueur est connecté, son avancement est publié en
- * ABSOLU, et il ne peut de toute façon pas avancer hors ligne.
+ * <p>The trade-off: counters reset on server restart, so "how many players have ever found this
+ * skull" is not a question this collector can answer — {@code increase()} over a window, yes;
+ * lifetime totals, no. The per-player gauges cover part of that gap: while a player is online,
+ * their progress is published as an absolute value, and they can't progress while offline anyway.
  */
 public final class BetonQuestCollector implements Collector, Listener {
 
 	private final Config config;
 
-	private Counter tagsAjoutes;
-	private Counter tagsRetires;
-	private Counter entreesJournal;
+	private Counter tagsAdded;
+	private Counter tagsRemoved;
+	private Counter journalEntries;
 	private Counter conversations;
-	private Gauge pointsJoueur;
-	private Gauge tagsJoueur;
+	private Gauge playerPoints;
+	private Gauge playerTags;
 	private PlayerSeries series;
 
 	/**
-	 * L'avancement des joueurs connectés, tenu à jour par les événements.
+	 * Progress of online players, kept up to date by events.
 	 *
-	 * <p>Indexé par IDENTIFIANT, pas par pseudonyme : celui-ci peut changer en cours de session,
-	 * et l'avancement se retrouverait alors sur deux clés pour un seul joueur.
+	 * <p>Indexed by UUID, not by name: a name can change mid-session, which would otherwise split
+	 * one player's progress across two keys.
 	 */
 	private final Map<String, Map<String, Integer>> points = new ConcurrentHashMap<>();
 	private final Map<String, Integer> tags = new ConcurrentHashMap<>();
@@ -70,67 +67,67 @@ public final class BetonQuestCollector implements Collector, Listener {
 	}
 
 	@Override
-	public String nom() {
+	public String name() {
 		return "betonquest";
 	}
 
 	@Override
-	public String origine() {
+	public String source() {
 		return "BetonQuest";
 	}
 
 	@Override
-	public void declarer(MetricRegistry r) {
-		tagsAjoutes = r.counter("quest_tags_total",
-				"Tags posés depuis le démarrage. Pour la chasse aux crânes, tag = trouve_<clé> : "
-						+ "c'est LA métrique des trouvailles.",
+	public void declare(MetricRegistry r) {
+		tagsAdded = r.counter("quest_tags_total",
+				"Tags added since startup. For skull hunts, tag = found_<key>: this is THE "
+						+ "metric for finds.",
 				"tag");
-		tagsRetires = r.counter("quest_tags_removed_total",
-				"Tags retirés. Une réinitialisation d'avancement se voit ici.", "tag");
-		entreesJournal = r.counter("quest_journal_entries_total",
-				"Entrées de journal écrites.");
+		tagsRemoved = r.counter("quest_tags_removed_total",
+				"Tags removed. A progress reset shows up here.", "tag");
+		journalEntries = r.counter("quest_journal_entries_total",
+				"Journal entries written.");
 		conversations = r.counter("quest_conversations_total",
-				"Conversations engagées avec un PNJ.");
-		// « player » ET « uuid » : le pseudonyme pour lire, l'identifiant pour suivre. Voir Joueur.
-		pointsJoueur = r.gauge("quest_player_points",
-				"Points de quête d'un joueur connecté, par catégorie. Pour la chasse, "
-						+ "category = cranes donne le nombre de crânes trouvés.",
+				"Conversations started with an NPC.");
+		// "player" AND "uuid": the name to read, the uuid to track. See PlayerRef.
+		playerPoints = r.gauge("quest_player_points",
+				"Quest points for an online player, by category. For a skull hunt, "
+						+ "category = skulls gives the number of skulls found.",
 				"player", "uuid", "category");
-		tagsJoueur = r.gauge("quest_player_tags",
-				"Tags posés sur un joueur DEPUIS SA CONNEXION. Ce n'est pas son total : le "
-						+ "collecteur ne lit pas la base, il n'a vu que ce qui s'est passé sous "
-						+ "ses yeux.",
+		playerTags = r.gauge("quest_player_tags",
+				"Tags added to a player SINCE THEY CONNECTED. Not their lifetime total: the "
+						+ "collector doesn't read the database, only what happened while it was "
+						+ "watching.",
 				"player", "uuid");
 		series = new PlayerSeries(r, config);
 	}
 
 	@Override
-	public void relever(MetricRegistry r) {
-		var connectes = Bukkit.getOnlinePlayers().stream()
-				.map(j -> Joueur.de(j.getUniqueId(), j.getName()))
+	public void collect(MetricRegistry r) {
+		var online = Bukkit.getOnlinePlayers().stream()
+				.map(p -> PlayerRef.of(p.getUniqueId(), p.getName()))
 				.toList();
-		for (Joueur qui : series.retenir(connectes, pointsJoueur, tagsJoueur)) {
-			Map<String, Integer> p = points.get(qui.uuid());
+		for (PlayerRef ref : series.select(online, playerPoints, playerTags)) {
+			Map<String, Integer> p = points.get(ref.uuid());
 			if (p != null) {
-				p.forEach((categorie, valeur) -> pointsJoueur.set(valeur, qui.etiquettes(categorie)));
+				p.forEach((category, value) -> playerPoints.set(value, ref.labels(category)));
 			}
-			Integer t = tags.get(qui.uuid());
+			Integer t = tags.get(ref.uuid());
 			if (t != null) {
-				tagsJoueur.set(t, qui.etiquettes());
+				playerTags.set(t, ref.labels());
 			}
 		}
 	}
 
-	// ------------------------------------------------------------------ événements
+	// ------------------------------------------------------------------ events
 	//
-	// MONITOR partout : on observe, on ne décide de rien. Ces événements ne sont pas annulables
-	// chez BetonQuest, mais la priorité reste la bonne façon de dire qu'on est un témoin.
+	// MONITOR everywhere: this collector only observes, never decides. BetonQuest's events aren't
+	// cancellable, but MONITOR is still the right way to declare "just a witness" intent.
 
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onTagAdd(PlayerTagAddEvent e) {
-		String tag = normaliser(e.getTag());
-		tagsAjoutes.inc(tag);
-		String id = identifiantDe(e.getProfile());
+		String tag = normalize(e.getTag());
+		tagsAdded.inc(tag);
+		String id = uuidOf(e.getProfile());
 		if (id != null) {
 			tags.merge(id, 1, Integer::sum);
 		}
@@ -138,21 +135,21 @@ public final class BetonQuestCollector implements Collector, Listener {
 
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onTagRemove(PlayerTagRemoveEvent e) {
-		tagsRetires.inc(normaliser(e.getTag()));
+		tagsRemoved.inc(normalize(e.getTag()));
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onPoint(PlayerUpdatePointEvent e) {
-		String id = identifiantDe(e.getProfile());
+		String id = uuidOf(e.getProfile());
 		if (id != null) {
 			points.computeIfAbsent(id, k -> new HashMap<>())
-					.put(normaliser(e.getCategory()), e.getNewCount());
+					.put(normalize(e.getCategory()), e.getNewCount());
 		}
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onJournal(PlayerJournalAddEvent e) {
-		entreesJournal.inc();
+		journalEntries.inc();
 	}
 
 	@EventHandler(priority = EventPriority.MONITOR)
@@ -161,11 +158,10 @@ public final class BetonQuestCollector implements Collector, Listener {
 	}
 
 	/**
-	 * L'état par joueur meurt avec la session.
+	 * Per-player state dies with the session.
 	 *
-	 * <p>Sans ça, la carte grossirait indéfiniment — un joueur par connexion, pour toujours. Le
-	 * plafond de {@link PlayerSeries} borne ce qui est PUBLIÉ ; ceci borne ce qui est RETENU, et
-	 * les deux sont nécessaires.
+	 * <p>Otherwise the map would grow forever, one entry per connection. {@link PlayerSeries}
+	 * caps what gets PUBLISHED; this caps what gets RETAINED, and both are needed.
 	 */
 	@EventHandler(priority = EventPriority.MONITOR)
 	public void onQuit(PlayerQuitEvent e) {
@@ -174,29 +170,28 @@ public final class BetonQuestCollector implements Collector, Listener {
 		tags.remove(id);
 	}
 
-	/** L'identifiant derrière un profil BetonQuest, ou {@code null} si le joueur est parti. */
-	private static String identifiantDe(Profile profil) {
-		var joueur = profil.getPlayer();
-		return joueur == null ? null : joueur.getUniqueId().toString();
+	/** The uuid behind a BetonQuest profile, or {@code null} if the player has left. */
+	private static String uuidOf(Profile profile) {
+		var player = profile.getPlayer();
+		return player == null ? null : player.getUniqueId().toString();
 	}
 
 	/**
-	 * Retire le préfixe de paquet : « cranes>trouve_guetteur » devient « trouve_guetteur ».
+	 * Strips the package prefix: "skulls&gt;found_watcher" becomes "found_watcher".
 	 *
-	 * <p>DEUX SÉPARATEURS, et c'est ce qui manquait. Seul le point était traité, alors que
-	 * BetonQuest 3 écrit ses chemins avec un chevron. La catégorie de la chasse aux crânes
-	 * ressortait donc telle quelle et Prometheus a stocké pendant des jours :
+	 * <p>Two separators need handling: only the dot was, while BetonQuest 3 writes paths with a
+	 * chevron. The skull hunt category was left untouched and Prometheus stored, for days:
 	 *
-	 * <pre>mc_quest_player_points{category="cranes&gt;cranes"}</pre>
+	 * <pre>mc_quest_player_points{category="skulls&gt;skulls"}</pre>
 	 *
-	 * <p>Une étiquette parfaitement crédible, qui n'a fait tousser personne — c'est en relisant
-	 * les séries pour une tout autre raison qu'elle a sauté aux yeux.
+	 * <p>A perfectly plausible label that no one noticed — it surfaced only while reviewing the
+	 * series for an unrelated reason.
 	 */
-	private static String normaliser(String brut) {
-		if (brut == null) {
+	private static String normalize(String raw) {
+		if (raw == null) {
 			return "unknown";
 		}
-		int coupe = Math.max(brut.lastIndexOf('.'), brut.lastIndexOf('>'));
-		return (coupe < 0 ? brut : brut.substring(coupe + 1)).toLowerCase(Locale.ROOT);
+		int cut = Math.max(raw.lastIndexOf('.'), raw.lastIndexOf('>'));
+		return (cut < 0 ? raw : raw.substring(cut + 1)).toLowerCase(Locale.ROOT);
 	}
 }

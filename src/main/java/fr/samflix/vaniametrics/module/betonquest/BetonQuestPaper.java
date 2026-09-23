@@ -7,28 +7,28 @@ import fr.samflix.vaniametrics.api.VaniaMetrics;
 import fr.samflix.vaniametrics.api.VaniaMetricsProvider;
 
 /**
- * Métriques des quêtes BetonQuest.
+ * BetonQuest quest metrics.
  *
- * <p>Ce module est un ÉCOUTEUR autant qu'un collecteur : l'essentiel de son travail se fait quand
- * l'événement arrive, pas quand Prometheus interroge. Il s'enregistre donc des deux côtés — dans
- * le registre d'événements de Bukkit et dans celui de VaniaMetrics — et se retire des deux.
+ * <p>This module is a listener as much as a collector: most of its work happens when an event
+ * arrives, not when Prometheus scrapes. It registers on both sides — Bukkit's event registry and
+ * VaniaMetrics' — and unregisters from both.
  */
 public final class BetonQuestPaper extends JavaPlugin {
 
-	private BetonQuestCollector collecteur;
+	private BetonQuestCollector collector;
 
 	@Override
 	public void onEnable() {
-		VaniaMetrics metriques = VaniaMetricsProvider.get();
-		collecteur = new BetonQuestCollector(metriques.config());
-		metriques.enregistrer(collecteur);
-		Bukkit.getPluginManager().registerEvents(collecteur, this);
+		VaniaMetrics metrics = VaniaMetricsProvider.get();
+		collector = new BetonQuestCollector(metrics.config());
+		metrics.register(collector);
+		Bukkit.getPluginManager().registerEvents(collector, this);
 	}
 
 	@Override
 	public void onDisable() {
-		if (collecteur != null) {
-			VaniaMetricsProvider.chercher().ifPresent(m -> m.retirer(collecteur));
+		if (collector != null) {
+			VaniaMetricsProvider.find().ifPresent(m -> m.unregister(collector));
 		}
 	}
 }

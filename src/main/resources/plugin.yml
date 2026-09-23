@@ -1,13 +1,13 @@
-# Métriques des quêtes — SANS TOUCHER À LA BASE.
+# Quest metrics, without touching the database.
 #
-# BetonQuest garde son état dans MySQL, mais il émet aussi de vrais événements
-# Bukkit : PlayerTagAddEvent, PlayerUpdatePointEvent, PlayerJournalAddEvent. On
-# écoute au lieu d'interroger, ce qui évite de coupler l'exportateur au schéma
-# d'un plugin qu'on ne maîtrise pas, et de faire dépendre le TPS d'une base.
+# BetonQuest keeps its state in MySQL, but it also emits real Bukkit events:
+# PlayerTagAddEvent, PlayerUpdatePointEvent, PlayerJournalAddEvent. We listen
+# instead of querying, which avoids coupling this exporter to a schema it
+# doesn't own, and keeps TPS independent of a database.
 name: VaniaMetrics-BetonQuest
 version: ${version}
 main: fr.samflix.vaniametrics.module.betonquest.BetonQuestPaper
 api-version: '1.21'
 authors: [mc-vania]
-description: "Métriques BetonQuest : tags, points, journal, conversations."
+description: "BetonQuest metrics: tags, points, journal, conversations."
 depend: [VaniaMetrics, BetonQuest]
