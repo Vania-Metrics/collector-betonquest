@@ -1,0 +1,8 @@
+# What the test server needs besides the core; read by the core's testkit (CollectorTestConfig).
+# The first jar of a list is the target plugin: its version is checked against compatibility.yml.
+collectors: [betonquest]
+runtime: java21
+plugins:
+  bukkit:
+    - url: https://cdn.modrinth.com/data/uVhukxY9/versions/Sfp4oOVr/BetonQuest-3.2.0.jar
+      sha512: 30c500ae314338dba9d39f16801178a8052b1cecc44c1eee0f1872d9fcc1f3cf0678699bcbd13f5c533dce6c2414d38b00f44dacc6bbe5086cb7994ae465b425
