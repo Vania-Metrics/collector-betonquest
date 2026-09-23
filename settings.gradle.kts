@@ -6,7 +6,7 @@
 // Per-build overrides:
 //   ./gradlew build -PvaniaCore.ref=main          a different core ref
 //   ./gradlew build -PvaniaCore.dir=../core       a local core (API development)
-rootProject.name = "colecteur-betonquest"
+rootProject.name = "collector-betonquest"
 
 dependencyResolutionManagement {
     repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
